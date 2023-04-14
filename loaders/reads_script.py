@@ -23,7 +23,9 @@ from multiprocessing import Pool, cpu_count
 import subprocess
 import shutil
 import six
-import ngsim
+import itertools
+import random
+import numpy as np
 from Bio import bgzf, SeqIO
 
 import datasets
@@ -354,6 +356,29 @@ class ReadsDataset(datasets.GeneratorBasedBuilder):
             ),
         ]
 
+    def _neggen(self, seq, num_part=20, keep=8,  prob=1.0):
+        if random.random() < (1.0-prob):
+            return seq
+        length = len(seq)
+        # get part
+        part_len = length // num_part
+        if part_len * num_part < length:
+            num_part += 1
+
+        iterator = np.arange(num_part)
+        keep_parts = random.sample(list(iterator), k=keep)
+
+        outpro = list()
+        for it in iterator:
+            start = it * part_len
+            pro_part = seq[start:start + part_len]
+            if it in keep_parts:
+                outpro.extend(pro_part)
+            else:
+                pro_part = random.choices(['A', 'C', 'G', 'T'], k=len(pro_part))
+                outpro.extend(pro_part)
+        return outpro
+
     # method parameters are unpacked from `gen_kwargs` as given in `_split_generators` "block_size": [int(bs) for bs in row.blockSizes.split(',')],
     def _generate_examples(self, fastq, split):
         # TODO: This method handles input defined in _split_generators to yield (key, example) tuples from the dataset.
@@ -376,23 +401,48 @@ class ReadsDataset(datasets.GeneratorBasedBuilder):
         if self.config.name.startswith('paired'):
             with open(fastq[0], 'r') as r1_file, open(fastq[1], 'r') as r2_file:
                 for i, (r1, r2) in enumerate(zip(SeqIO.parse(r1_file, 'fastq'), SeqIO.parse(r2_file, 'fastq'))):
-                    yield i, {
-                            "read_1": r1.seq,
-                            "read_2": r2.seq,
-                            "label_1": r1.description.split()[-1], # Read commentary 
-                            "label_2": r2.description.split()[-1], # Read commentary 
-                            }
+                    label = r1.description.split()[-1]
+                    if label == "absence"
+                        yield i, {
+                                "read_1": _neggen(r1.seq, num_part=10, keep=4, prob=0.0),
+                                "read_2": _neggen(r2.seq, num_part=10, keep=4, prob=0.0),
+                                "label_1": label,
+                                "label_2": label,
+                                }
+                    else:
+                        yield i, {
+                                "read_1": r1.seq,
+                                "read_2": r2.seq,
+                                "label_1": label,
+                                "label_2": label,
+                                }
         if self.config.name.startswith('multi'):
             with open(fastq['paired'][0], 'r') as r1_file, open(fastq['paired'][1], 'r') as r2_file, open(fastq['single'], 'r') as r_file:
                 for i, (r1, r2) in enumerate(zip(SeqIO.parse(r1_file, 'fastq'), SeqIO.parse(r2_file, 'fastq'))):
-                    yield i, {
-                            "read_1": r1.seq,
-                            "read_2": r2.seq,
-                            "label": r1.description.split()[-1], # Read commentary 
-                            }
-                for i, r in enumerate(SeqIO.parse(r_file, 'fastq')):
-                    yield i+j+1, {
-                            "read_1": r1.seq,
-                            "read_2": "",
-                            "label": r.description.split()[-1], # Read commentary 
-                            }
+                    label = r1.description.split()[-1]
+                    if label == "absence"
+                        yield i, {
+                                "read_1": _neggen(r1.seq, num_part=10, keep=4, prob=0.0),
+                                "read_2": _neggen(r2.seq, num_part=10, keep=4, prob=0.0),
+                                "label": label,
+                                }
+                    else:
+                        yield i, {
+                                "read_1": r1.seq,
+                                "read_2": r2.seq,
+                                "label": label,
+                                }
+                for j, r in enumerate(SeqIO.parse(r_file, 'fastq')):
+                    label = r.description.split()[-1]
+                    if label == "absence"
+                        yield i+j+1, {
+                                "read_1": _neggen(r.seq, num_part=10, keep=4, prob=0.0),
+                                "read_2": "",
+                                "label": label,
+                                }
+                    else:
+                        yield i+j+1, {
+                                "read_1": r.seq,
+                                "read_2": "",
+                                "label": label,
+                                }
