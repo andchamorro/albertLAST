@@ -2,7 +2,6 @@ import os
 import sys
 import argparse
 import tempfile
-import snakemake
 import subprocess
 import requests
 import json
@@ -12,11 +11,14 @@ from typing import Optional, List
 import pandas as pd
 from Bio import SeqIO
 from itertools import repeat
-import snakemake
 from memory_profiler import profile
 from datetime import datetime
 import time
 import logging
+
+sys.path.extend(['.', '..'])
+
+from deploy.modules.salmon import run as _salmon
 
 from transformers import (
     pipeline,
@@ -38,25 +40,6 @@ logging.basicConfig(format = '%(asctime)s - %(levelname)s - %(name)s -   %(messa
 
 logging.getLogger("transformers.modeling_utils").setLevel(
         logging.WARN)  # Reduce logging
-
-@profile(stream=sys.stdout)
-def _salmon(**kwargs):
-    snakefile = "deploy/resources/snakemake/snakefile.paired" if kwargs["paired"] else "deploy/resources/snakemake/snakefile.single"
-
-    snakemake.snakemake(
-        snakefile=snakefile,
-        config={
-            "input_path": kwargs["input_path"],
-            "output_path": kwargs["output_path"],
-            "index": kwargs["index"],
-            "index_label": kwargs["index_label"], 
-            "salmon": os.path.join(os.path.expanduser('~'),".local/opt/salmon/bin/salmon"),
-            "num_threads" : kwargs["num_threads"],
-            "exprtype": kwargs["exprtype"],
-        },
-        quiet=True,
-        lock=False
-    )
 
 def _kmer_split(k: int, sequence: str) -> List[str]:
     return " ".join([sequence[j: j + k] for j in range(len(sequence) - k + 1)])
@@ -89,12 +72,14 @@ def predict(request, pipe):
     except FileExistsError:
        # directory already exists
        pass
+    # TODO: redefine the s
     salmon_kargs = {
         "input_path": request.out,
         "output_path": os.path.join(request.out, "salmon_out"),
         "index": "deploy/resources/IntactL1ElementsFLI-L1Ens84.38",
+        "salmon": request.salmon,
         "index_label": "fli-l1", 
-        "num_threads": 16,
+        "num_threads": "16",
         "exprtype": "TPM",
         "paired": True,
     }
@@ -107,49 +92,49 @@ def predict(request, pipe):
                         for z in zip(examples[read_1_key],  examples[read_2_key])]}
         return kmer_example
 
-    raw_datasets = datasets.load_dataset("loaders/fast_script.py", name="paired_fast", data_files={"read_1": request.reads_1, "read_2": request.reads_2}, split="train")
-    request.eval_batch_size = request.per_gpu_eval_batch_size * max(1, request.n_gpu)
+    # raw_datasets = datasets.load_dataset("loaders/fast_script.py", name="paired_fast", data_files={"read_1": request.reads_1, "read_2": request.reads_2}, split="train", trust_remote_code=True)
+    # request.eval_batch_size = request.per_gpu_eval_batch_size * max(1, request.n_gpu)
 
-    column_names = raw_datasets.column_names
-    raw_datasets = raw_datasets.map(
-        preprocess_function,
-        batched=True,
-        num_proc=request.preprocessing_num_workers,
-        remove_columns=column_names,
-        load_from_cache_file=False,
-        desc="Running tokenizer on dataset",
-    )
+    # column_names = raw_datasets.column_names
+    # raw_datasets = raw_datasets.map(
+    #     preprocess_function,
+    #     batched=True,
+    #     num_proc=request.preprocessing_num_workers,
+    #     remove_columns=column_names,
+    #     load_from_cache_file=False,
+    #     desc="Running tokenizer on dataset",
+    # )
 
-    logger.info("***** Running prediction {} *****".format(request.prefix))
-    logger.info("  Num examples = %d", len(raw_datasets))
-    logger.info("  Batch size = %d", request.eval_batch_size)
-    time_start = time.time()
-    inference = pipe(KeyDataset(raw_datasets, "sequence"), padding="max_length", max_length=512, truncation=True)
-    # TODO
-    # r1 and r2 has the same id
-    line1_ids = [(r1.id, r2.id) for r1, r2, inf in zip(_read(request.reads_1, request.fformat),
-                                          _read(request.reads_2, request.fformat), tqdm(inference, total=len(raw_datasets)))
-                                if inf['label'] == 'presence']
-    time_end = time.time()
-    logger.info("  Prediction elapsed time %.5f", time_end-time_start)
-    with open(os.path.join(request.out, "presence_ids_R1.list"), 'w') as pre_ids:
-        pre_ids.write('\n'.join([i1 for i1, i2 in line1_ids]))
-    with open(os.path.join(request.out, "presence_ids_R2.list"), 'w') as pre_ids:
-        pre_ids.write('\n'.join([i2 for i1, i2 in line1_ids]))
-    seq_grep_r1 = subprocess.Popen(['seqkit', 
-                                 'grep', '-f', os.path.join(request.out, "presence_ids_R1.list"),
-                                 request.reads_1, '-o', os.path.join(request.out, "presence_R1.fq")], 
-                                stdin=subprocess.PIPE, stdout=subprocess.PIPE)
-    seq_grep_r2 = subprocess.Popen(['seqkit', 
-                                 'grep', '-f', os.path.join(request.out, "presence_ids_R2.list"),
-                                 request.reads_2, '-o', os.path.join(request.out, "presence_R2.fq")], 
-                                stdin=subprocess.PIPE, stdout=subprocess.PIPE)
-    _ = seq_grep_r1.communicate()
-    _ = seq_grep_r2.communicate()
+    # logger.info("***** Running prediction {} *****".format(request.prefix))
+    # logger.info("  Num examples = %d", len(raw_datasets))
+    # logger.info("  Batch size = %d", request.eval_batch_size)
+    # time_start = time.time()
+    # inference = pipe(KeyDataset(raw_datasets, "sequence"), padding="max_length", max_length=512, truncation=True)
+    # # TODO
+    # # r1 and r2 has the same id
+    # line1_ids = [(r1.id, r2.id) for r1, r2, inf in zip(_read(request.reads_1, request.fformat),
+    #                                       _read(request.reads_2, request.fformat), tqdm(inference, total=len(raw_datasets)))
+    #                             if inf['label'] == 'presence']
+    # time_end = time.time()
+    # logger.info("  Prediction elapsed time %.5f", time_end-time_start)
+    # with open(os.path.join(request.out, "presence_ids_R1.list"), 'w') as pre_ids:
+    #     pre_ids.write('\n'.join([i1 for i1, i2 in line1_ids]))
+    # with open(os.path.join(request.out, "presence_ids_R2.list"), 'w') as pre_ids:
+    #     pre_ids.write('\n'.join([i2 for i1, i2 in line1_ids]))
+    # seq_grep_r1 = subprocess.Popen(['seqkit', 
+    #                              'grep', '-f', os.path.join(request.out, "presence_ids_R1.list"),
+    #                              request.reads_1, '-o', os.path.join(request.out, "presence_R1.fq")], 
+    #                             stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+    # seq_grep_r2 = subprocess.Popen(['seqkit', 
+    #                              'grep', '-f', os.path.join(request.out, "presence_ids_R2.list"),
+    #                              request.reads_2, '-o', os.path.join(request.out, "presence_R2.fq")], 
+    #                             stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+    # _ = seq_grep_r1.communicate()
+    # _ = seq_grep_r2.communicate()
     logger.info("***** Running Salom {} *****".format(request.prefix))
     salmon_kargs["paired"] = True 
     time_start = time.time()
-    _salmon(**salmon_kargs)
+    _salmon(salmon_kargs)
     time_end = time.time()
     logger.info("  Salmon elapsed time %.5f", time_end-time_start)
 
@@ -206,6 +191,9 @@ def main():
     )
     parser.add_argument(
         "--mem_profile", default=None, type=str
+    )
+    parser.add_argument(
+        "--salmon", default=os.path.join(os.path.expanduser('~'),".local/opt/salmon/bin/salmon"), type=str
     )
     args = parser.parse_args()
 

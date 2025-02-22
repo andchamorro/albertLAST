@@ -14,5 +14,6 @@ notebooks/
 *.egg-info/
 .installed.cfg
 *.egg
+*.DS_Store
 # Sphinx documentation
 docs/_build/
